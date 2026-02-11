@@ -6,6 +6,13 @@ export default function ListenerRoom({ room }) {
   const audioRef = useRef();
 
   useEffect(() => {
+    if (!room) return;
+
+    const audioEl = audioRef.current;
+
+    let transport;
+    let consumer;
+
     socket.emit("join", { roomId: room, role: "listener" });
 
     socket.emit("rtpCapabilities", null, async (caps) => {
@@ -14,30 +21,42 @@ export default function ListenerRoom({ room }) {
       socket.emit("setCaps", device.rtpCapabilities);
 
       socket.emit("createTransport", null, async (params) => {
-        const transport = device.createRecvTransport(params);
+        transport = device.createRecvTransport(params);
 
         transport.on("connect", ({ dtlsParameters }, cb) => {
           socket.emit("connectTransport", { dtlsParameters });
           cb();
         });
-
         socket.emit("consume", null, async (consumerParams) => {
-          if (!consumerParams) return console.log("No consumer");
+          if (!consumerParams) return;
+          
+          consumer = await transport.consume(consumerParams);
 
-          const consumer = await transport.consume(consumerParams);
-
+          console.log("Consuming started");
+          
           const stream = new MediaStream();
           stream.addTrack(consumer.track);
-
-          audioRef.current.srcObject = stream;
-
-          consumer.track.onunmute = () => console.log("Audio packets arriving");
-
-          console.log("Consuming...");
+          
+          if (audioEl) {
+            audioEl.srcObject = stream;
+          }
         });
       });
     });
-  }, []);
+
+    return () => {
+      consumer?.close();
+      transport?.close();
+
+      if (audioEl) {
+        audioEl.srcObject = null;
+      }
+
+      socket.emit("leave", { roomId: room });
+    };
+  }, [room]);
+
+
 
   return (
     <div className="box">

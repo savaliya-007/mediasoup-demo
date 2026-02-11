@@ -6,7 +6,7 @@ export default function SpeakerRoom() {
   const [room, setRoom] = useState("");
 
   const start = async () => {
-    // Generate room safely on click (not during render)
+    
     const newRoom = Math.floor(1000 + Math.random() * 9000).toString();
     setRoom(newRoom);
 
