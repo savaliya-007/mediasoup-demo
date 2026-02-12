@@ -12,6 +12,7 @@ import {
 
 export const socketHandler = (io: Server) => {
   io.on("connection", (socket) => {
+
     // ---------- JOIN ----------
     socket.on("join", ({ roomId, role, name }) => {
       if (!getRoom(roomId)) createRoom(roomId);
