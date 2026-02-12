@@ -5,20 +5,52 @@ import { socketHandler } from "./socket/socketHandler";
 import { createWorker } from "./mediasoup/worker";
 import { createRouter } from "./mediasoup/router";
 
-(async () => {
-  await createWorker();
-  await createRouter();
+const PORT = process.env.PORT || 8000;
 
-  const app = express();
-  const server = http.createServer(app);
+const startServer = async () => {
+  try {
+    // --- MEDIASOUP INIT ---
+    const worker = await createWorker();
+    await createRouter();
 
-  const io = new Server(server, {
-    cors: { origin: "*" },
-  });
+    // Restart worker if it dies
+    worker.on("died", () => {
+      console.error("Mediasoup Worker died. Restarting in 2s...");
+      setTimeout(async () => {
+        await createWorker();
+        await createRouter();
+      }, 2000);
+    });
 
-  socketHandler(io);
+    // --- EXPRESS ---
+    const app = express();
 
-  server.listen(8000, () =>
-    console.log("Server running on http://localhost:8000"),
-  );
-})();
+    // simple health check
+    app.get("/health", (_, res) => {
+      res.json({ status: "ok" });
+    });
+
+    const server = http.createServer(app);
+
+    // --- SOCKET.IO ---
+    const io = new Server(server, {
+      cors: {
+        origin: "*",
+        methods: ["GET", "POST"],
+      },
+    });
+
+    socketHandler(io);
+
+    // --- START ---
+    server.listen(PORT, () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+
+  } catch (err) {
+    console.error("Server startup failed:", err);
+    process.exit(1);
+  }
+};
+
+startServer();

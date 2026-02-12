@@ -1,67 +1,117 @@
-import { useEffect, useRef } from "react";
-import { socket } from "../socket";
-import { loadDevice } from "../mediasoup";
+import { useEffect, useRef, useState } from "react";
+import { socket } from "../services/socket";
+import { loadDevice } from "../services/mediasoup";
+import Avatar from "../components/Avatar";
 
-export default function ListenerRoom({ room }) {
-  const audioRef = useRef();
+export default function ListenerRoom({ room, name }) {
+  const audioRef = useRef(null);
+  const transportRef = useRef(null);
+  const consumerRef = useRef(null);
+
+  const [count, setCount] = useState(0);
+  const [users, setUsers] = useState([]);
 
   useEffect(() => {
     if (!room) return;
 
     const audioEl = audioRef.current;
 
-    let transport;
-    let consumer;
+    socket.emit("join", { roomId: room, role: "listener", name });
 
-    socket.emit("join", { roomId: room, role: "listener" });
+    socket.on("room:count", setCount);
+    socket.on("room:users", setUsers);
 
-    socket.emit("rtpCapabilities", null, async (caps) => {
-      const device = await loadDevice(caps);
+    const consumeAudio = () => {
+      const transport = transportRef.current;
+      if (!transport) return;
 
-      socket.emit("setCaps", device.rtpCapabilities);
+      socket.emit("consume", null, async (params) => {
+        if (!params) return;
 
-      socket.emit("createTransport", null, async (params) => {
-        transport = device.createRecvTransport(params);
+        consumerRef.current?.close();
 
-        transport.on("connect", ({ dtlsParameters }, cb) => {
-          socket.emit("connectTransport", { dtlsParameters });
-          cb();
-        });
-        socket.emit("consume", null, async (consumerParams) => {
-          if (!consumerParams) return;
-          
-          consumer = await transport.consume(consumerParams);
+        const consumer = await transport.consume(params);
+        consumerRef.current = consumer;
 
-          console.log("Consuming started");
-          
-          const stream = new MediaStream();
-          stream.addTrack(consumer.track);
-          
-          if (audioEl) {
-            audioEl.srcObject = stream;
-          }
+        const stream = new MediaStream();
+        stream.addTrack(consumer.track);
+
+        audioEl.srcObject = stream;
+        audioEl.play().catch(() => {});
+      });
+    };
+
+    const init = async () => {
+      socket.emit("rtpCapabilities", null, async (caps) => {
+        const device = await loadDevice(caps);
+
+        socket.emit("setCaps", device.rtpCapabilities);
+
+        socket.emit("createTransport", null, async (params) => {
+          const transport = device.createRecvTransport(params);
+          transportRef.current = transport;
+
+          transport.on("connect", ({ dtlsParameters }, cb) => {
+            socket.emit("connectTransport", { dtlsParameters });
+            cb();
+          });
+
+          consumeAudio();
         });
       });
-    });
+    };
+
+    init();
+
+    socket.on("new-producer", consumeAudio);
 
     return () => {
-      consumer?.close();
-      transport?.close();
-
-      if (audioEl) {
-        audioEl.srcObject = null;
-      }
-
+      consumerRef.current?.close();
+      transportRef.current?.close();
       socket.emit("leave", { roomId: room });
+
+      socket.off("room:count");
+      socket.off("room:users");
+      socket.off("new-producer");
     };
   }, [room]);
 
-
+  // ---------- SPLIT USERS ----------
+  const speaker = users.find((u) => u.role === "speaker");
+  const listeners = users.filter((u) => u.role === "listener");
 
   return (
-    <div className="box">
-      <h2>Listening Room {room}</h2>
-      <audio ref={audioRef} autoPlay />
+    <div className="min-h-screen bg-black text-white p-6 flex flex-col items-center gap-8">
+      {/* HEADER */}
+      <div className="bg-gray-900 px-4 py-2 rounded-xl border border-gray-700 shadow">
+        {room} — {count} Listening
+      </div>
+
+      {/* SPEAKER CARD */}
+      {speaker && (
+        <div className="flex flex-col items-center gap-3 p-6 rounded-2xl shadow-xl w-72">
+          <h2 className="text-lg font-semibold text-green-400">Speaker</h2>
+          <Avatar name={speaker.name} />
+        </div>
+      )}
+
+      {/* PARTICIPANTS GRID */}
+      <div className="w-full max-w-3xl">
+        <h2 className="text-lg font-semibold mb-4 text-blue-400 text-center">
+          Participants
+        </h2>
+
+        <div className="grid grid-cols-3 gap-6 justify-items-center">
+          {listeners.map((u, i) => (
+            <div key={i} className="flex flex-col items-center gap-2">
+              <Avatar name={u.name} />
+              <p className="text-sm">{u.name}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <audio ref={audioRef} autoPlay playsInline className="hidden" />
     </div>
   );
 }

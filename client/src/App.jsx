@@ -1,18 +1,26 @@
 import { useState } from "react";
 import Home from "./pages/Home";
-import SpeakerRoom from "./pages/SpeakerRoom";
 import ListenerRoom from "./pages/ListenerRoom";
+import SpeakerRoom from "./pages/SpeakerRoom";
 
 export default function App() {
-  const [page, setPage] = useState("home");
+  const [view, setView] = useState("home");
+  const [user, setUser] = useState("");
   const [room, setRoom] = useState("");
 
-  const navigate = (role, code = "") => {
-    setRoom(code);
-    setPage(role);
-  };
+  if (view === "listener") {
+    return <ListenerRoom room={room} name={user} />;
+  }
 
-  if (page === "speaker") return <SpeakerRoom />;
-  if (page === "listener") return <ListenerRoom room={room} />;
-  return <Home navigate={navigate} />;
+  if (view === "speaker") {
+    return <SpeakerRoom room={room} name={user} />;
+  }
+
+  return (
+    <Home
+      setView={setView}
+      setUser={setUser} // IMPORTANT
+      setRoom={setRoom} // IMPORTANT
+    />
+  );
 }
