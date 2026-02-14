@@ -10,6 +10,7 @@ export default function ListenerRoom({ room, name }) {
 
   const [count, setCount] = useState(0);
   const [users, setUsers] = useState([]);
+  const [speechText, setSpeechText] = useState("");
 
   useEffect(() => {
     if (!room) return;
@@ -18,76 +19,109 @@ export default function ListenerRoom({ room, name }) {
 
     socket.emit("join", { roomId: room, role: "listener", name });
 
-    socket.on("room:count", setCount);
-    socket.on("room:users", setUsers);
+    const onCount = (val) => setCount(val ?? 0);
+    const onUsers = (list) => setUsers(list ?? []);
+    const onSpeech = (text) => {
+      if (!text) return;
+      setSpeechText(text);
+    };
 
+    socket.on("room:count", onCount);
+    socket.on("room:users", onUsers);
+    socket.on("speechText", onSpeech);
+
+    // ---------- CONSUME AUDIO ----------
     const consumeAudio = () => {
       const transport = transportRef.current;
-      if (!transport) return;
+      if (!transport || !audioEl) return;
 
       socket.emit("consume", null, async (params) => {
         if (!params) return;
 
-        consumerRef.current?.close();
+        try {
+          consumerRef.current?.close();
 
-        const consumer = await transport.consume(params);
-        consumerRef.current = consumer;
+          const consumer = await transport.consume(params);
+          consumerRef.current = consumer;
 
-        const stream = new MediaStream();
-        stream.addTrack(consumer.track);
+          const stream = new MediaStream();
+          stream.addTrack(consumer.track);
 
-        audioEl.srcObject = stream;
-        audioEl.play().catch(() => {});
+          audioEl.srcObject = stream;
+
+          try {
+            await audioEl.play();
+          } catch {
+            console.warn("Autoplay blocked");
+          }
+        } catch (err) {
+          console.error("Consume audio error:", err);
+        }
       });
     };
 
+    // ---------- INIT ----------
     const init = async () => {
-      socket.emit("rtpCapabilities", null, async (caps) => {
-        const device = await loadDevice(caps);
+      try {
+        socket.emit("rtpCapabilities", null, async (caps) => {
+          if (!caps) return;
 
-        socket.emit("setCaps", device.rtpCapabilities);
+          const device = await loadDevice(caps);
 
-        socket.emit("createTransport", null, async (params) => {
-          const transport = device.createRecvTransport(params);
-          transportRef.current = transport;
+          socket.emit("setCaps", device.rtpCapabilities);
 
-          transport.on("connect", ({ dtlsParameters }, cb) => {
-            socket.emit("connectTransport", { dtlsParameters });
-            cb();
+          socket.emit("createTransport", null, async (params) => {
+            if (!params) return;
+
+            const transport = device.createRecvTransport(params);
+            transportRef.current = transport;
+
+            transport.on("connect", ({ dtlsParameters }, cb, errCb) => {
+              socket.emit("connectTransport", { dtlsParameters }, (ok) => {
+                if (!ok) return errCb?.(new Error("Transport connect failed"));
+                cb();
+              });
+            });
+
+            consumeAudio();
           });
-
-          consumeAudio();
         });
-      });
+      } catch (err) {
+        console.error("Listener init error:", err);
+      }
     };
 
     init();
 
     socket.on("new-producer", consumeAudio);
 
+    // ---------- CLEANUP ----------
     return () => {
-      consumerRef.current?.close();
-      transportRef.current?.close();
+      try {
+        consumerRef.current?.close();
+        transportRef.current?.close();
+      } catch {
+        console.warn("Cleanup warning");
+      }
+
       socket.emit("leave", { roomId: room });
 
-      socket.off("room:count");
-      socket.off("room:users");
-      socket.off("new-producer");
+      socket.off("room:count", onCount);
+      socket.off("room:users", onUsers);
+      socket.off("speechText", onSpeech);
+      socket.off("new-producer", consumeAudio);
     };
-  }, [room]);
+  }, [room, name]);
 
-  // ---------- SPLIT USERS ----------
   const speaker = users.find((u) => u.role === "speaker");
   const listeners = users.filter((u) => u.role === "listener");
 
   return (
     <div className="min-h-screen bg-black text-white p-6 flex flex-col items-center gap-8">
-      {/* HEADER */}
       <div className="bg-gray-900 px-4 py-2 rounded-xl border border-gray-700 shadow">
         {room} — {count} Listening
       </div>
 
-      {/* SPEAKER CARD */}
       {speaker && (
         <div className="flex flex-col items-center gap-3 p-6 rounded-2xl shadow-xl w-72">
           <h2 className="text-lg font-semibold text-green-400">Speaker</h2>
@@ -95,7 +129,11 @@ export default function ListenerRoom({ room, name }) {
         </div>
       )}
 
-      {/* PARTICIPANTS GRID */}
+      {/* ---------- LIVE SUBTITLE ---------- */}
+      <div className="bg-gray-800 px-6 py-3 rounded-lg text-lg text-yellow-300 min-h-10 w-full max-w-lg text-center">
+        {speechText || "Waiting for speech..."}
+      </div>
+
       <div className="w-full max-w-3xl">
         <h2 className="text-lg font-semibold mb-4 text-blue-400 text-center">
           Participants

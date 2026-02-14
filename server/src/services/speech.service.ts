@@ -1,120 +1,113 @@
 import * as sdk from "microsoft-cognitiveservices-speech-sdk";
 import { AzureConfig } from "../config/azureConfig";
+import { Server } from "socket.io";
 
 let recognizer: sdk.SpeechRecognizer | null = null;
 let pushStream: sdk.PushAudioInputStream | null = null;
+let ioInstance: Server | null = null;
 
 // ---------- INIT ----------
-export const initSpeech = () => {
+export const initSpeech = (io: Server) => {
+  // prevent double init
   if (recognizer) return;
 
-  const speechConfig = sdk.SpeechConfig.fromSubscription(
-    AzureConfig.speechRecognition.key,
-    AzureConfig.speechRecognition.region,
-  );
+  ioInstance = io;
 
-  speechConfig.speechRecognitionLanguage = "en-US";
+  try {
+    const speechConfig = sdk.SpeechConfig.fromSubscription(
+      AzureConfig.speechRecognition.key,
+      AzureConfig.speechRecognition.region,
+    );
 
-  // PCM 16kHz 16-bit mono
-  const format = sdk.AudioStreamFormat.getWaveFormatPCM(16000, 16, 1);
+    speechConfig.speechRecognitionLanguage =
+      AzureConfig.speechRecognition.defaultSourceLang;
 
-  pushStream = sdk.AudioInputStream.createPushStream(format);
-  const audioConfig = sdk.AudioConfig.fromStreamInput(pushStream);
+    // Azure expects PCM 16kHz mono
+    const format = sdk.AudioStreamFormat.getWaveFormatPCM(16000, 16, 1);
 
-  recognizer = new sdk.SpeechRecognizer(speechConfig, audioConfig);
-};
+    pushStream = sdk.AudioInputStream.createPushStream(format);
+    const audioConfig = sdk.AudioConfig.fromStreamInput(pushStream);
 
-// ---------- START RECOGNITION ----------
-export const startRecognition = (onText: (text: string) => void) => {
-  if (!recognizer) return;
+    recognizer = new sdk.SpeechRecognizer(speechConfig, audioConfig);
 
-  recognizer.recognizing = (_, e) => {
-    if (e.result?.text) {
-      console.log("PARTIAL:", e.result.text);
-    }
-  };
+    // ---------- EVENTS ----------
 
-  recognizer.recognized = (_, e) => {
-    if (e.result?.text) {
-      console.log("AZURE TEXT:", e.result.text);
-      onText(e.result.text);
-    }
-  };
+    recognizer.sessionStarted = () => {
+      console.info("Azure speech session started");
+    };
 
-  recognizer?.startContinuousRecognitionAsync();
-};
+    recognizer.recognizing = (
+      _sender: sdk.Recognizer,
+      e: sdk.SpeechRecognitionEventArgs,
+    ) => {
+      // partial text — do NOT emit to clients to avoid spam
+      if (e?.result?.text) {
+        // intentionally quiet
+      }
+    };
 
-// ---------- STOP ----------
-export const stopRecognition = () => {
-  recognizer?.stopContinuousRecognitionAsync();
-};
+    recognizer.recognized = (
+      _sender: sdk.Recognizer,
+      e: sdk.SpeechRecognitionEventArgs,
+    ) => {
+      const text = e?.result?.text;
+      if (!text) return;
 
-// ---------- DOWNSAMPLE HELPER ----------
-const downsampleBuffer = (
-  buffer: Float32Array,
-  inRate: number,
-  outRate: number,
-) => {
-  if (outRate === inRate) return buffer;
+      ioInstance?.emit("speechText", text);
+    };
 
-  const ratio = inRate / outRate;
-  const newLength = Math.round(buffer.length / ratio);
-  const result = new Float32Array(newLength);
+    recognizer.canceled = (
+      _sender: sdk.Recognizer,
+      e: sdk.SpeechRecognitionCanceledEventArgs,
+    ) => {
+      console.warn("Azure speech canceled:", e?.errorDetails);
+    };
 
-  let offset = 0;
-  for (let i = 0; i < newLength; i++) {
-    const nextOffset = Math.round((i + 1) * ratio);
-    let accum = 0;
-    let count = 0;
-
-    for (let j = offset; j < nextOffset && j < buffer.length; j++) {
-      const sample = buffer[j] ?? 0; // TS-safe
-      accum += sample;
-      count++;
-    }
-
-    result[i] = count > 0 ? accum / count : 0;
-    offset = nextOffset;
+    // ---------- START ----------
+    recognizer.startContinuousRecognitionAsync(
+      () => console.info("Speech recognition started"),
+      (err) => console.error("Speech recognition failed:", err),
+    );
+  } catch (err) {
+    console.error("Speech init error:", err);
   }
-
-  return result;
 };
 
 // ---------- PUSH AUDIO ----------
-export const pushAudioChunk = (chunk: ArrayBuffer) => {
-  if (!pushStream) return;
+export const pushAudioChunk = (data: Uint8Array) => {
+  if (!pushStream || !data || data.byteLength === 0) return;
 
   try {
-    // Uint8 → Float32
-    const floatData = new Float32Array(chunk);
+    // ensure pure ArrayBuffer (not SharedArrayBuffer)
+    const buffer = new ArrayBuffer(data.byteLength);
+    new Uint8Array(buffer).set(data);
 
-    // 48k → 16k downsample
-    const downsampled = downsampleBuffer(floatData, 48000, 16000);
-
-    // Float32 → PCM16
-    const pcmBuffer = new ArrayBuffer(downsampled.length * 2);
-    const view = new DataView(pcmBuffer);
-
-    for (let i = 0; i < downsampled.length; i++) {
-      const sample = downsampled[i] ?? 0;
-      const s = Math.max(-1, Math.min(1, sample));
-      view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-    }
-
-    pushStream?.write(pcmBuffer);
+    pushStream.write(buffer);
   } catch (err) {
     console.error("PushStream write error:", err);
   }
 };
 
-// ---------- CLOSE ----------
-export const closeSpeechStream = () => {
+// ---------- STOP ----------
+export const stopSpeech = () => {
+  if (!recognizer) return;
+
   try {
-    pushStream?.close();
-  } catch {
-    // ignore
+    recognizer.stopContinuousRecognitionAsync(
+      () => {
+        console.info("Speech recognition stopped");
+      },
+      (err) => console.error("Speech stop failed:", err),
+    );
+  } catch (err) {
+    console.error("Speech stop error:", err);
   }
 
-  pushStream = null;
+  try {
+    pushStream?.close();
+  } catch {}
+
   recognizer = null;
+  pushStream = null;
+  ioInstance = null;
 };

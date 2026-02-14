@@ -23,7 +23,6 @@ export const startAudioCapture = async () => {
 
     const floatData = event.data;
 
-    console.log("AUDIO CHUNK SENDING");
 
     // Convert to Uint8Array (safe for socket)
     const uint8 = new Uint8Array(floatData.buffer);

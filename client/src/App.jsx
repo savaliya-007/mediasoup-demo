@@ -19,8 +19,8 @@ export default function App() {
   return (
     <Home
       setView={setView}
-      setUser={setUser} // IMPORTANT
-      setRoom={setRoom} // IMPORTANT
+      setUser={setUser}
+      setRoom={setRoom} 
     />
   );
 }

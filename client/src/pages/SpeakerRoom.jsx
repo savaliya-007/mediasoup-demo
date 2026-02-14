@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { socket } from "../services/socket";
 import { loadDevice } from "../services/mediasoup";
 import Avatar from "../components/Avatar";
-import {Check,Copy} from 'lucide-react'
+import { Check, Copy } from "lucide-react";
 import { FaMicrophone, FaMicrophoneSlash } from "react-icons/fa";
 
 export default function SpeakerRoom({ name }) {
@@ -18,7 +18,36 @@ export default function SpeakerRoom({ name }) {
   const producerRef = useRef(null);
   const trackRef = useRef(null);
 
-  // JOIN ONLY ONCE
+  const audioCtxRef = useRef(null);
+  const processorRef = useRef(null);
+  const sourceRef = useRef(null);
+
+  // ---------- CLEANUP ----------
+  const cleanupAudio = () => {
+    try {
+      trackRef.current?.stop();
+      producerRef.current?.close();
+      transportRef.current?.close();
+
+      processorRef.current?.disconnect();
+      sourceRef.current?.disconnect();
+
+      if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
+        audioCtxRef.current.close();
+      }
+    } catch (err) {
+      console.warn("Cleanup warning:", err?.message);
+    }
+
+    processorRef.current = null;
+    audioCtxRef.current = null;
+    sourceRef.current = null;
+    trackRef.current = null;
+    producerRef.current = null;
+    transportRef.current = null;
+  };
+
+  // ---------- JOIN ----------
   useEffect(() => {
     socket.emit("join", { roomId: room, role: "speaker", name });
 
@@ -26,66 +55,171 @@ export default function SpeakerRoom({ name }) {
     socket.on("room:users", setUsers);
 
     return () => {
+      cleanupAudio();
       socket.emit("leave", { roomId: room });
-      socket.off("room:count");
-      socket.off("room:users");
+      socket.off("room:count", setCount);
+      socket.off("room:users", setUsers);
     };
-  }, []);
+  }, [room, name]);
 
   const copyCode = async () => {
-    await navigator.clipboard.writeText(room);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1200);
+    try {
+      await navigator.clipboard.writeText(room);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      console.warn("Clipboard failed");
+    }
   };
 
+  // ---------- DOWNSAMPLE ----------
+  const downsampleBuffer = (buffer, sampleRate, outSampleRate) => {
+    if (outSampleRate === sampleRate) return buffer;
+
+    const ratio = sampleRate / outSampleRate;
+    const newLength = Math.round(buffer.length / ratio);
+    const result = new Float32Array(newLength);
+
+    let offsetResult = 0;
+    let offsetBuffer = 0;
+
+    while (offsetResult < result.length) {
+      const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+      let accum = 0;
+      let count = 0;
+
+      for (
+        let i = offsetBuffer;
+        i < nextOffsetBuffer && i < buffer.length;
+        i++
+      ) {
+        accum += buffer[i];
+        count++;
+      }
+
+      result[offsetResult] = accum / count;
+      offsetResult++;
+      offsetBuffer = nextOffsetBuffer;
+    }
+
+    return result;
+  };
+
+  // ---------- FLOAT → PCM16 ----------
+  const floatTo16BitPCM = (float32, inputRate) => {
+    const downsampled = downsampleBuffer(float32, inputRate, 16000);
+
+    const buffer = new ArrayBuffer(downsampled.length * 2);
+    const view = new DataView(buffer);
+
+    let offset = 0;
+    for (let i = 0; i < downsampled.length; i++, offset += 2) {
+      let s = Math.max(-1, Math.min(1, downsampled[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+
+    return buffer;
+  };
+
+  // ---------- SPEECH STREAM ----------
+  const startSpeechStream = async (stream) => {
+    try {
+      const audioCtx = new AudioContext({ latencyHint: "interactive" });
+      audioCtxRef.current = audioCtx;
+
+      if (!audioCtx.audioWorklet) return;
+
+      await audioCtx.audioWorklet.addModule("/pcmProcessor.js");
+
+      const source = audioCtx.createMediaStreamSource(stream);
+      sourceRef.current = source;
+
+      const workletNode = new AudioWorkletNode(audioCtx, "pcm-processor");
+      processorRef.current = workletNode;
+
+      const sampleRate = audioCtx.sampleRate;
+
+      workletNode.port.onmessage = (event) => {
+        if (!event?.data) return;
+
+        const pcmBuffer = floatTo16BitPCM(event.data, sampleRate);
+        socket.emit("audioChunk", new Uint8Array(pcmBuffer));
+      };
+
+      source.connect(workletNode);
+      workletNode.connect(audioCtx.destination);
+    } catch (err) {
+      console.error("Speech stream error:", err);
+    }
+  };
+
+  // ---------- MEDIASOUP PRODUCE ----------
   const startProducing = async () => {
-    socket.emit("rtpCapabilities", null, async (caps) => {
-      const device = await loadDevice(caps);
+    try {
+      socket.emit("rtpCapabilities", null, async (caps) => {
+        if (!caps) return;
 
-      socket.emit("createTransport", null, async (params) => {
-        const transport = device.createSendTransport(params);
-        transportRef.current = transport;
+        const device = await loadDevice(caps);
 
-        transport.on("connect", ({ dtlsParameters }, cb) => {
-          socket.emit("connectTransport", { dtlsParameters });
-          cb();
+        socket.emit("createTransport", null, async (params) => {
+          if (!params) return;
+
+          const transport = device.createSendTransport(params);
+          transportRef.current = transport;
+
+          transport.on("connect", ({ dtlsParameters }, cb, errCb) => {
+            socket.emit("connectTransport", { dtlsParameters }, (ok) => {
+              if (!ok) return errCb(new Error("Transport connect failed"));
+              cb();
+            });
+          });
+
+          transport.on("produce", ({ kind, rtpParameters }, cb, errCb) => {
+            socket.emit("produce", { kind, rtpParameters }, (data) => {
+              if (!data?.id)
+                return errCb(new Error("Producer creation failed"));
+              cb({ id: data.id });
+            });
+          });
+
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+          });
+
+          const track = stream.getAudioTracks()[0];
+          trackRef.current = track;
+
+          const producer = await transport.produce({ track });
+          producerRef.current = producer;
+
+          await startSpeechStream(stream);
         });
-
-        transport.on("produce", ({ kind, rtpParameters }, cb) => {
-          socket.emit("produce", { kind, rtpParameters }, cb);
-        });
-
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-        });
-
-        const track = stream.getAudioTracks()[0];
-        trackRef.current = track;
-
-        const producer = await transport.produce({ track });
-        producerRef.current = producer;
       });
-    });
+    } catch (err) {
+      console.error("Mediasoup produce error:", err);
+    }
   };
 
+  // ---------- MIC TOGGLE ----------
   const toggleMic = async () => {
     if (micOn) {
-      trackRef.current?.stop();
-      producerRef.current?.close();
+      cleanupAudio();
       setMicOn(false);
       return;
     }
 
     setMicOn(true);
-    startProducing();
+    await startProducing();
   };
 
-  // ---------- SPLIT USERS ----------
   const listeners = users.filter((u) => u.role === "listener");
 
   return (
     <div className="min-h-screen bg-black text-white p-6 flex flex-col items-center gap-8">
-      {/* HEADER */}
       <div className="bg-gray-900 border border-gray-700 rounded-xl px-4 py-2 flex items-center gap-3 shadow">
         <span className="font-mono text-lg">{room}</span>
 
@@ -93,7 +227,7 @@ export default function SpeakerRoom({ name }) {
           onClick={copyCode}
           className="text-xs bg-gray-700 px-2 py-1 rounded"
         >
-          {copied ? <Check size={15}/> : <Copy size={15}/>}
+          {copied ? <Check size={15} /> : <Copy size={15} />}
         </button>
 
         <div className="text-blue-400 bg-blue-900/30 px-3 py-1 rounded-full text-sm">
@@ -105,14 +239,11 @@ export default function SpeakerRoom({ name }) {
         )}
       </div>
 
-      {/* SPEAKER CARD */}
-      <div className="flex flex-col items-center gap-3 rounded-2xl shadow-xl w-72">
-        <h2 className="text-lg font-semibold text-green-400">Speaker</h2>
+      <div>
         <Avatar name={name} />
-        <p className="text-lg font-medium">{name} (you)</p>
+        <p className="text-lg font-medium mt-2 px-18">{name} (you)</p>
       </div>
 
-      {/* MIC BUTTON */}
       <button
         onClick={toggleMic}
         className={`p-4 rounded-full ${micOn ? "bg-red-600" : "bg-green-600"}`}
@@ -120,20 +251,13 @@ export default function SpeakerRoom({ name }) {
         {micOn ? <FaMicrophoneSlash size={22} /> : <FaMicrophone size={22} />}
       </button>
 
-      {/* PARTICIPANTS GRID */}
-      <div className="w-full max-w-3xl">
-        <h2 className="text-lg font-semibold mb-4 text-blue-400 text-center">
-          Participants
-        </h2>
-
-        <div className="grid grid-cols-3 gap-6 justify-items-center">
-          {listeners.map((u, i) => (
-            <div key={i} className="flex flex-col items-center gap-2">
-              <Avatar name={u.name} />
-              <p className="text-sm">{u.name}</p>
-            </div>
-          ))}
-        </div>
+      <div className="grid grid-cols-3 gap-6 justify-items-center">
+        {listeners.map((u, i) => (
+          <div key={i} className="flex flex-col items-center gap-2">
+            <Avatar name={u.name} />
+            <p className="text-sm">{u.name}</p>
+          </div>
+        ))}
       </div>
     </div>
   );
