@@ -1,6 +1,7 @@
 import * as sdk from "microsoft-cognitiveservices-speech-sdk";
 import { AzureConfig } from "../config/azureConfig";
 import { translateText } from "./translator.service";
+import { synthesizeSpeech } from "./tts.service";
 import { Server } from "socket.io";
 
 let recognizer: sdk.SpeechRecognizer | null = null;
@@ -48,6 +49,7 @@ const createRecognizer = (lang: string) => {
         const translated = await translateText(text, lang);
         if (translated) {
           s.emit("speechTranslated", translated);
+          await synthesizeSpeech(ioInstance!, s.id, translated, lang);
         }
       }
     } catch (err) {

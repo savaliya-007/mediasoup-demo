@@ -12,17 +12,15 @@ export default function ListenerRoom({ room, name }) {
   const [users, setUsers] = useState([]);
   const [speechText, setSpeechText] = useState("");
   const [translatedText, setTranslatedText] = useState("");
-  const [lang, setLang] = useState("hi"); // 🔹 new
+  const [lang, setLang] = useState("hi");
 
+  // ---------- MAIN ROOM / AUDIO INIT ----------
   useEffect(() => {
     if (!room) return;
 
     const audioEl = audioRef.current;
 
     socket.emit("join", { roomId: room, role: "listener", name });
-
-    // send initial language
-    socket.emit("setLang", lang);
 
     const onCount = (val) => setCount(val ?? 0);
     const onUsers = (list) => setUsers(list ?? []);
@@ -32,15 +30,33 @@ export default function ListenerRoom({ room, name }) {
       setSpeechText(text);
     };
 
-    const onTranslated = (text) => {
+    const onTranslated = async (text) => {
       if (!text) return;
       setTranslatedText(text);
+    };
+
+    // 🔊 TTS AUDIO
+    const onTtsAudio = (buffer) => {
+      if (!buffer) return;
+
+      try {
+        const blob = new Blob([buffer], { type: "audio/wav" });
+        const url = URL.createObjectURL(blob);
+
+        const audio = new Audio(url);
+        audio.play().catch(() => {
+          console.warn("TTS autoplay blocked");
+        });
+      } catch (err) {
+        console.error("TTS play error:", err);
+      }
     };
 
     socket.on("room:count", onCount);
     socket.on("room:users", onUsers);
     socket.on("speechText", onSpeech);
     socket.on("speechTranslated", onTranslated);
+    socket.on("ttsAudio", onTtsAudio);
 
     // ---------- CONSUME AUDIO ----------
     const consumeAudio = () => {
@@ -122,9 +138,15 @@ export default function ListenerRoom({ room, name }) {
       socket.off("room:users", onUsers);
       socket.off("speechText", onSpeech);
       socket.off("speechTranslated", onTranslated);
+      socket.off("ttsAudio", onTtsAudio);
       socket.off("new-producer", consumeAudio);
     };
-  }, [room, name, lang]); // 🔹 lang dependency
+  }, [room, name]);
+
+  // ---------- LANGUAGE CHANGE ONLY ----------
+  useEffect(() => {
+    socket.emit("setLang", lang);
+  }, [lang]);
 
   const speaker = users.find((u) => u.role === "speaker");
   const listeners = users.filter((u) => u.role === "listener");
@@ -138,11 +160,7 @@ export default function ListenerRoom({ room, name }) {
       {/* ---------- LANGUAGE SELECT ---------- */}
       <select
         value={lang}
-        onChange={(e) => {
-          const l = e.target.value;
-          setLang(l);
-          socket.emit("setLang", l);
-        }}
+        onChange={(e) => setLang(e.target.value)}
         className="bg-gray-800 text-white p-2 rounded"
       >
         <option value="hi">Hindi</option>
@@ -184,6 +202,7 @@ export default function ListenerRoom({ room, name }) {
         </div>
       </div>
 
+      {/* SPEAKER ORIGINAL AUDIO */}
       <audio ref={audioRef} autoPlay playsInline className="hidden" />
     </div>
   );

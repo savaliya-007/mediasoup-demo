@@ -13,4 +13,8 @@ export const AzureConfig = {
     endpoint: "https://api.cognitive.microsofttranslator.com",
     defaultTargetLang: "hi",
   },
+  textToSpeech: {
+    key: ENV.KEY_SPEECH_RECOGNISE_AZURE,
+    region: ENV.REGION_SPEECH_RECOGNISE_AZURE,
+  },
 };
