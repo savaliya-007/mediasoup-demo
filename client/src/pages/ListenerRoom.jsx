@@ -11,6 +11,7 @@ export default function ListenerRoom({ room, name }) {
   const [count, setCount] = useState(0);
   const [users, setUsers] = useState([]);
   const [speechText, setSpeechText] = useState("");
+  const [translatedText, setTranslatedText] = useState("");
 
   useEffect(() => {
     if (!room) return;
@@ -21,14 +22,21 @@ export default function ListenerRoom({ room, name }) {
 
     const onCount = (val) => setCount(val ?? 0);
     const onUsers = (list) => setUsers(list ?? []);
+
     const onSpeech = (text) => {
       if (!text) return;
       setSpeechText(text);
     };
 
+    const onTranslated = (text) => {
+      if (!text) return;
+      setTranslatedText(text);
+    };
+
     socket.on("room:count", onCount);
     socket.on("room:users", onUsers);
     socket.on("speechText", onSpeech);
+    socket.on("speechTranslated", onTranslated);
 
     // ---------- CONSUME AUDIO ----------
     const consumeAudio = () => {
@@ -109,6 +117,7 @@ export default function ListenerRoom({ room, name }) {
       socket.off("room:count", onCount);
       socket.off("room:users", onUsers);
       socket.off("speechText", onSpeech);
+      socket.off("speechTranslated", onTranslated);
       socket.off("new-producer", consumeAudio);
     };
   }, [room, name]);
@@ -129,9 +138,14 @@ export default function ListenerRoom({ room, name }) {
         </div>
       )}
 
-      {/* ---------- LIVE SUBTITLE ---------- */}
+      {/* ---------- ORIGINAL SUBTITLE ---------- */}
       <div className="bg-gray-800 px-6 py-3 rounded-lg text-lg text-yellow-300 min-h-10 w-full max-w-lg text-center">
         {speechText || "Waiting for speech..."}
+      </div>
+
+      {/* ---------- TRANSLATED SUBTITLE ---------- */}
+      <div className="bg-gray-700 px-6 py-3 rounded-lg text-lg text-green-300 min-h-10 w-full max-w-lg text-center">
+        {translatedText || "Waiting translation..."}
       </div>
 
       <div className="w-full max-w-3xl">

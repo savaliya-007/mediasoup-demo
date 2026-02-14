@@ -1,5 +1,6 @@
 import * as sdk from "microsoft-cognitiveservices-speech-sdk";
 import { AzureConfig } from "../config/azureConfig";
+import { translateText } from "./translator.service";
 import { Server } from "socket.io";
 
 let recognizer: sdk.SpeechRecognizer | null = null;
@@ -46,15 +47,27 @@ export const initSpeech = (io: Server) => {
       }
     };
 
-    recognizer.recognized = (
-      _sender: sdk.Recognizer,
-      e: sdk.SpeechRecognitionEventArgs,
-    ) => {
-      const text = e?.result?.text;
-      if (!text) return;
+  recognizer.recognized = async (
+    _sender: sdk.Recognizer,
+    e: sdk.SpeechRecognitionEventArgs,
+  ) => {
+    const text = e?.result?.text;
+    if (!text) return;
 
-      ioInstance?.emit("speechText", text);
-    };
+    // original text
+    ioInstance?.emit("speechText", text);
+
+    // translated text
+    try {
+      const translated = await translateText(text);
+      if (translated) {
+        ioInstance?.emit("speechTranslated", translated);
+      }
+    } catch (err) {
+      console.error("Translation failed:", err);
+    }
+  };
+
 
     recognizer.canceled = (
       _sender: sdk.Recognizer,
