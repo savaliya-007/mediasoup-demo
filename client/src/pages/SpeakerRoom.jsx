@@ -14,6 +14,9 @@ export default function SpeakerRoom({ name }) {
   const [copied, setCopied] = useState(false);
   const [micOn, setMicOn] = useState(false);
 
+  // 🔹 NEW SOURCE LANGUAGE STATE
+  const [sourceLang, setSourceLang] = useState("en-US");
+
   const transportRef = useRef(null);
   const producerRef = useRef(null);
   const trackRef = useRef(null);
@@ -50,6 +53,9 @@ export default function SpeakerRoom({ name }) {
   // ---------- JOIN ----------
   useEffect(() => {
     socket.emit("join", { roomId: room, role: "speaker", name });
+
+    // send initial language
+    socket.emit("setSourceLang", sourceLang);
 
     socket.on("room:count", setCount);
     socket.on("room:users", setUsers);
@@ -238,6 +244,23 @@ export default function SpeakerRoom({ name }) {
           <span className="text-green-400 text-xs animate-pulse">LIVE</span>
         )}
       </div>
+
+      {/* 🔹 SOURCE LANGUAGE SELECT */}
+      <select
+        value={sourceLang}
+        onChange={(e) => {
+          const l = e.target.value;
+          setSourceLang(l);
+          socket.emit("setSourceLang", l);
+        }}
+        className="bg-gray-800 text-white p-2 rounded"
+      >
+        <option value="en-US">English</option>
+        <option value="hi-IN">Hindi</option>
+        <option value="gu-IN">Gujarati</option>
+        <option value="es-ES">Spanish</option>
+        <option value="fr-FR">French</option>
+      </select>
 
       <div>
         <Avatar name={name} />

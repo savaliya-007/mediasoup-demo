@@ -10,7 +10,11 @@ import {
   getUsers,
 } from "../rooms/roomManager";
 
-import { initSpeech, pushAudioChunk } from "../services/speech.service";
+import {
+  initSpeech,
+  pushAudioChunk,
+  updateSourceLanguage, // 🔹 NEW
+} from "../services/speech.service";
 
 // ---------- TYPES ----------
 type JoinPayload = {
@@ -31,6 +35,17 @@ export const socketHandler = (io: Server) => {
 
   io.on("connection", (socket: Socket) => {
     console.info("User connected:", socket.id);
+
+    // ---------- LISTENER LANGUAGE ----------
+    socket.on("setLang", (lang: string) => {
+      socket.data.lang = lang;
+    });
+
+    // ---------- SPEAKER SOURCE LANGUAGE ----------
+    socket.on("setSourceLang", (lang: string) => {
+      socket.data.sourceLang = lang;
+      updateSourceLanguage(lang); // 🔹 tells Azure recognizer to switch
+    });
 
     // ---------- JOIN ----------
     socket.on("join", ({ roomId, role, name }: JoinPayload) => {
@@ -69,7 +84,7 @@ export const socketHandler = (io: Server) => {
       }
     });
 
-    // ---------- CONNECT TRANSPORT (ACK REQUIRED) ----------
+    // ---------- CONNECT TRANSPORT ----------
     socket.on(
       "connectTransport",
       async ({ dtlsParameters }: { dtlsParameters: unknown }, cb?: AckCb) => {

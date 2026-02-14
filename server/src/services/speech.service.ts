@@ -7,45 +7,28 @@ let recognizer: sdk.SpeechRecognizer | null = null;
 let pushStream: sdk.PushAudioInputStream | null = null;
 let ioInstance: Server | null = null;
 
-// ---------- INIT ----------
-export const initSpeech = (io: Server) => {
-  // prevent double init
-  if (recognizer) return;
+// ---------- INTERNAL CREATOR ----------
+const createRecognizer = (lang: string) => {
+  const speechConfig = sdk.SpeechConfig.fromSubscription(
+    AzureConfig.speechRecognition.key,
+    AzureConfig.speechRecognition.region,
+  );
 
-  ioInstance = io;
+  speechConfig.speechRecognitionLanguage = lang;
 
-  try {
-    const speechConfig = sdk.SpeechConfig.fromSubscription(
-      AzureConfig.speechRecognition.key,
-      AzureConfig.speechRecognition.region,
-    );
+  const audioConfig = sdk.AudioConfig.fromStreamInput(pushStream!);
 
-    speechConfig.speechRecognitionLanguage =
-      AzureConfig.speechRecognition.defaultSourceLang;
+  recognizer = new sdk.SpeechRecognizer(speechConfig, audioConfig);
 
-    // Azure expects PCM 16kHz mono
-    const format = sdk.AudioStreamFormat.getWaveFormatPCM(16000, 16, 1);
+  // ---------- EVENTS ----------
 
-    pushStream = sdk.AudioInputStream.createPushStream(format);
-    const audioConfig = sdk.AudioConfig.fromStreamInput(pushStream);
+  recognizer.sessionStarted = () => {
+    console.info("Azure speech session started:", lang);
+  };
 
-    recognizer = new sdk.SpeechRecognizer(speechConfig, audioConfig);
-
-    // ---------- EVENTS ----------
-
-    recognizer.sessionStarted = () => {
-      console.info("Azure speech session started");
-    };
-
-    recognizer.recognizing = (
-      _sender: sdk.Recognizer,
-      e: sdk.SpeechRecognitionEventArgs,
-    ) => {
-      // partial text — do NOT emit to clients to avoid spam
-      if (e?.result?.text) {
-        // intentionally quiet
-      }
-    };
+  recognizer.recognizing = () => {
+    // ignore partials
+  };
 
   recognizer.recognized = async (
     _sender: sdk.Recognizer,
@@ -54,35 +37,68 @@ export const initSpeech = (io: Server) => {
     const text = e?.result?.text;
     if (!text) return;
 
-    // original text
     ioInstance?.emit("speechText", text);
 
-    // translated text
     try {
-      const translated = await translateText(text);
-      if (translated) {
-        ioInstance?.emit("speechTranslated", translated);
+      const sockets = await ioInstance?.fetchSockets();
+
+      for (const s of sockets || []) {
+        const lang = s.data.lang || "hi";
+
+        const translated = await translateText(text, lang);
+        if (translated) {
+          s.emit("speechTranslated", translated);
+        }
       }
     } catch (err) {
-      console.error("Translation failed:", err);
+      console.error("Translation loop failed:", err);
     }
   };
 
+  recognizer.canceled = (
+    _sender: sdk.Recognizer,
+    e: sdk.SpeechRecognitionCanceledEventArgs,
+  ) => {
+    console.warn("Azure speech canceled:", e?.errorDetails);
+  };
 
-    recognizer.canceled = (
-      _sender: sdk.Recognizer,
-      e: sdk.SpeechRecognitionCanceledEventArgs,
-    ) => {
-      console.warn("Azure speech canceled:", e?.errorDetails);
-    };
+  recognizer.startContinuousRecognitionAsync(
+    () => console.info("Speech recognition started"),
+    (err) => console.error("Speech recognition failed:", err),
+  );
+};
 
-    // ---------- START ----------
-    recognizer.startContinuousRecognitionAsync(
-      () => console.info("Speech recognition started"),
-      (err) => console.error("Speech recognition failed:", err),
-    );
+// ---------- INIT ----------
+export const initSpeech = (io: Server) => {
+  if (recognizer) return;
+
+  ioInstance = io;
+
+  try {
+    const format = sdk.AudioStreamFormat.getWaveFormatPCM(16000, 16, 1);
+    pushStream = sdk.AudioInputStream.createPushStream(format);
+
+    createRecognizer(AzureConfig.speechRecognition.defaultSourceLang);
   } catch (err) {
     console.error("Speech init error:", err);
+  }
+};
+
+// ---------- UPDATE SOURCE LANGUAGE ----------
+export const updateSourceLanguage = (lang: string) => {
+  if (!pushStream) return;
+
+  try {
+    recognizer?.stopContinuousRecognitionAsync(() => {
+      recognizer?.close();
+      recognizer = null;
+
+      console.info("Changing source language to:", lang);
+
+      createRecognizer(lang);
+    });
+  } catch (err) {
+    console.error("Source language update failed:", err);
   }
 };
 
@@ -91,10 +107,8 @@ export const pushAudioChunk = (data: Uint8Array) => {
   if (!pushStream || !data || data.byteLength === 0) return;
 
   try {
-    // ensure pure ArrayBuffer (not SharedArrayBuffer)
     const buffer = new ArrayBuffer(data.byteLength);
     new Uint8Array(buffer).set(data);
-
     pushStream.write(buffer);
   } catch (err) {
     console.error("PushStream write error:", err);
@@ -107,9 +121,7 @@ export const stopSpeech = () => {
 
   try {
     recognizer.stopContinuousRecognitionAsync(
-      () => {
-        console.info("Speech recognition stopped");
-      },
+      () => console.info("Speech recognition stopped"),
       (err) => console.error("Speech stop failed:", err),
     );
   } catch (err) {

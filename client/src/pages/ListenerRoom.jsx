@@ -12,6 +12,7 @@ export default function ListenerRoom({ room, name }) {
   const [users, setUsers] = useState([]);
   const [speechText, setSpeechText] = useState("");
   const [translatedText, setTranslatedText] = useState("");
+  const [lang, setLang] = useState("hi"); // 🔹 new
 
   useEffect(() => {
     if (!room) return;
@@ -19,6 +20,9 @@ export default function ListenerRoom({ room, name }) {
     const audioEl = audioRef.current;
 
     socket.emit("join", { roomId: room, role: "listener", name });
+
+    // send initial language
+    socket.emit("setLang", lang);
 
     const onCount = (val) => setCount(val ?? 0);
     const onUsers = (list) => setUsers(list ?? []);
@@ -120,7 +124,7 @@ export default function ListenerRoom({ room, name }) {
       socket.off("speechTranslated", onTranslated);
       socket.off("new-producer", consumeAudio);
     };
-  }, [room, name]);
+  }, [room, name, lang]); // 🔹 lang dependency
 
   const speaker = users.find((u) => u.role === "speaker");
   const listeners = users.filter((u) => u.role === "listener");
@@ -130,6 +134,23 @@ export default function ListenerRoom({ room, name }) {
       <div className="bg-gray-900 px-4 py-2 rounded-xl border border-gray-700 shadow">
         {room} — {count} Listening
       </div>
+
+      {/* ---------- LANGUAGE SELECT ---------- */}
+      <select
+        value={lang}
+        onChange={(e) => {
+          const l = e.target.value;
+          setLang(l);
+          socket.emit("setLang", l);
+        }}
+        className="bg-gray-800 text-white p-2 rounded"
+      >
+        <option value="hi">Hindi</option>
+        <option value="es">Spanish</option>
+        <option value="fr">French</option>
+        <option value="de">German</option>
+        <option value="gu">Gujarati</option>
+      </select>
 
       {speaker && (
         <div className="flex flex-col items-center gap-3 p-6 rounded-2xl shadow-xl w-72">
